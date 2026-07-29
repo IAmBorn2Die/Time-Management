@@ -1,0 +1,1525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bench — clock, timer, stopwatch</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=Azeret+Mono:wght@200;300;400;500&display=swap" rel="stylesheet">
+
+<style>
+/* ============================================================
+   TOKENS
+   ============================================================ */
+:root{
+  --panel:        #10141a;   /* deep graphite-blue, not pure black */
+  --panel-raised: #171d26;
+  --hairline:     #242c38;
+  --bone:         #e9e7e0;   /* warm off-white — the numerals */
+  --dim:          #67717f;   /* labels, inactive states */
+  --signal:       #f0a848;   /* instrument backlight amber */
+  --alarm:        #e0574f;
+
+  --face-display: "Azeret Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --face-util:    "Archivo", system-ui, -apple-system, sans-serif;
+
+  --gap: clamp(1rem, 4vw, 2rem);
+}
+
+*,*::before,*::after{ box-sizing:border-box; }
+body,h1,h2,p,ul,ol,li,figure{ margin:0; padding:0; }
+ul,ol{ list-style:none; }
+
+html,body{ min-height:100%; }
+
+html{ scroll-behavior:smooth; }
+
+body{
+  background:var(--panel);
+  color:var(--bone);
+  font-family:var(--face-util);
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:flex-start;   /* centering would clip the top once it overflows */
+  gap:var(--gap);
+  padding:var(--gap);
+  min-height:100vh;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* ============================================================
+   RIG — the instrument shell
+   ============================================================ */
+.rig{
+  width:100%;
+  max-width:34rem;
+  background:var(--panel-raised);
+  border:1px solid var(--hairline);
+  border-radius:4px;
+  overflow:hidden;
+}
+
+/* ---- tab rail ---- */
+.rail{
+  display:flex;
+  border-bottom:1px solid var(--hairline);
+}
+.rail__tab{
+  flex:1;
+  appearance:none;
+  background:none;
+  border:0;
+  border-right:1px solid var(--hairline);
+  color:var(--dim);
+  font-family:var(--face-util);
+  font-size:.6875rem;
+  font-weight:600;
+  letter-spacing:.16em;
+  text-transform:uppercase;
+  padding:.9rem .5rem;
+  cursor:pointer;
+  transition:color .15s, background .15s;
+}
+.rail__tab:last-child{ border-right:0; }
+.rail__tab:hover{ color:var(--bone); }
+.rail__tab[aria-selected="true"]{
+  color:var(--panel);
+  background:var(--bone);
+}
+.rail__tab:focus-visible{
+  outline:2px solid var(--signal);
+  outline-offset:-4px;
+}
+
+/* ============================================================
+   PANELS
+   ============================================================ */
+.panel{
+  padding:clamp(1.75rem,7vw,3rem) var(--gap) var(--gap);
+  text-align:center;
+}
+.panel[hidden]{ display:none; }
+
+/* ---- the readout ---- */
+.readout{
+  font-family:var(--face-display);
+  font-weight:300;
+  font-size:clamp(2.4rem,12vw,4.5rem);
+  line-height:1;
+  letter-spacing:-.03em;
+  font-variant-numeric:tabular-nums;
+  white-space:nowrap;
+}
+.readout__sub{ color:var(--signal); }
+.readout__frac{
+  color:var(--dim);
+  font-size:.5em;
+  letter-spacing:-.02em;
+}
+
+/* ---- SIGNATURE: the sweep track ----
+   One device, three meanings. Clock: fills across the minute.
+   Stopwatch: fills across each second. Timer: drains as time runs out. */
+.sweep{
+  position:relative;
+  height:3px;
+  margin:clamp(1.25rem,4vw,1.75rem) 0 1rem;
+  background:
+    repeating-linear-gradient(
+      to right,
+      var(--hairline) 0 1px,
+      transparent 1px calc(100% / 60)
+    ),
+    var(--panel);
+}
+.sweep__fill{
+  position:absolute;
+  inset:0 auto 0 0;
+  width:0%;
+  background:var(--signal);
+}
+.sweep--alarm .sweep__fill{ background:var(--alarm); }
+
+/* ---- small tracked-out utility text ---- */
+.meta{
+  font-size:.6875rem;
+  font-weight:500;
+  letter-spacing:.18em;
+  text-transform:uppercase;
+  color:var(--dim);
+  min-height:1em;
+}
+.meta__hot{ color:var(--signal); }
+
+/* ============================================================
+   CONTROLS
+   ============================================================ */
+.controls{
+  display:flex;
+  gap:.5rem;
+  justify-content:center;
+  margin-top:clamp(1.5rem,5vw,2rem);
+  flex-wrap:wrap;
+}
+.btn{
+  appearance:none;
+  background:none;
+  border:1px solid var(--hairline);
+  border-radius:2px;
+  color:var(--bone);
+  font-family:var(--face-util);
+  font-size:.6875rem;
+  font-weight:600;
+  letter-spacing:.14em;
+  text-transform:uppercase;
+  padding:.75rem 1.25rem;
+  min-width:6rem;
+  cursor:pointer;
+  transition:border-color .15s, color .15s, background .15s;
+}
+.btn:hover:not(:disabled){ border-color:var(--dim); }
+.btn:focus-visible{ outline:2px solid var(--signal); outline-offset:2px; }
+.btn:disabled{ color:var(--hairline); cursor:not-allowed; }
+.btn--go{
+  border-color:var(--signal);
+  color:var(--signal);
+}
+.btn--go:hover:not(:disabled){
+  background:var(--signal);
+  color:var(--panel);
+}
+
+/* ============================================================
+   TIMER — entry field
+   ============================================================ */
+.entry{
+  display:flex;
+  align-items:baseline;
+  justify-content:center;
+  font-family:var(--face-display);
+  font-weight:300;
+  font-size:clamp(2.4rem,12vw,4.5rem);
+  line-height:1;
+  letter-spacing:-.03em;
+}
+.entry__field{
+  width:2.1ch;
+  background:none;
+  border:0;
+  border-bottom:1px solid var(--hairline);
+  color:var(--bone);
+  font:inherit;
+  letter-spacing:inherit;
+  text-align:center;
+  padding:0;
+  font-variant-numeric:tabular-nums;
+}
+.entry__field:focus{
+  outline:none;
+  border-bottom-color:var(--signal);
+  color:var(--signal);
+}
+.entry__colon{ color:var(--dim); padding:0 .1em; }
+
+.presets{
+  display:flex;
+  gap:.375rem;
+  justify-content:center;
+  margin-top:1.25rem;
+  flex-wrap:wrap;
+}
+.chip{
+  appearance:none;
+  background:none;
+  border:1px solid var(--hairline);
+  border-radius:99px;
+  color:var(--dim);
+  font-family:var(--face-util);
+  font-size:.625rem;
+  font-weight:600;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+  padding:.4rem .8rem;
+  cursor:pointer;
+  transition:color .15s, border-color .15s;
+}
+.chip:hover{ color:var(--bone); border-color:var(--dim); }
+.chip:focus-visible{ outline:2px solid var(--signal); outline-offset:2px; }
+
+/* firing state */
+@keyframes pulse{ 50%{ opacity:.2; } }
+.panel--firing .readout{
+  color:var(--alarm);
+  animation:pulse 1s steps(1) infinite;
+}
+
+/* ============================================================
+   STOPWATCH — laps
+   ============================================================ */
+.laps{
+  margin-top:1.5rem;
+  border-top:1px solid var(--hairline);
+  max-height:11rem;
+  overflow-y:auto;
+  text-align:left;
+}
+.laps__row{
+  display:grid;
+  grid-template-columns:2.5rem 1fr 1fr;
+  gap:.5rem;
+  align-items:baseline;
+  padding:.6rem .25rem;
+  border-bottom:1px solid var(--hairline);
+  font-family:var(--face-display);
+  font-size:.8125rem;
+  font-weight:300;
+  font-variant-numeric:tabular-nums;
+}
+.laps__idx{
+  font-family:var(--face-util);
+  font-size:.625rem;
+  font-weight:600;
+  letter-spacing:.12em;
+  color:var(--dim);
+}
+.laps__split{ color:var(--bone); }
+.laps__total{ color:var(--dim); text-align:right; }
+.laps__row--best .laps__split{ color:var(--signal); }
+.laps__row--worst .laps__split{ color:var(--alarm); }
+
+.hint{
+  margin-top:1.25rem;
+  font-size:.625rem;
+  letter-spacing:.1em;
+  text-transform:uppercase;
+  color:var(--hairline);
+}
+
+/* ============================================================
+   CALENDAR
+   ============================================================ */
+.cal{
+  width:100%;
+  max-width:34rem;
+  background:var(--panel-raised);
+  border:1px solid var(--hairline);
+  border-radius:4px;
+  overflow:hidden;
+}
+
+.cal__head{
+  display:flex;
+  align-items:center;
+  gap:.5rem;
+  padding:.75rem .75rem .75rem var(--gap);
+  border-bottom:1px solid var(--hairline);
+}
+.cal__title{
+  flex:1;
+  font-size:.6875rem;
+  font-weight:600;
+  letter-spacing:.16em;
+  text-transform:uppercase;
+}
+.cal__year{ color:var(--dim); }
+
+.cal__btn{
+  appearance:none;
+  background:none;
+  border:1px solid var(--hairline);
+  border-radius:2px;
+  color:var(--dim);
+  font-family:var(--face-util);
+  font-size:.625rem;
+  font-weight:600;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+  height:1.9rem;
+  min-width:1.9rem;
+  padding:0 .55rem;
+  cursor:pointer;
+  transition:color .15s, border-color .15s;
+}
+.cal__btn:hover{ color:var(--bone); border-color:var(--dim); }
+.cal__btn:focus-visible{ outline:2px solid var(--signal); outline-offset:2px; }
+
+/* month progress — the sweep, at month scale */
+.cal__progress{ margin:0; }
+.cal__progress[hidden]{ display:none; }
+
+.cal__grid{
+  display:grid;
+  grid-template-columns:repeat(7,1fr);
+}
+.cal__dow{
+  text-align:center;
+  padding:.85rem 0 .6rem;
+  font-size:.5625rem;
+  font-weight:600;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+  color:var(--dim);
+}
+.cal__dow--end{ color:var(--hairline); }
+
+.cal__day{
+  appearance:none;
+  background:none;
+  border:0;
+  border-top:1px solid var(--hairline);
+  border-radius:0;
+  color:var(--bone);
+  font-family:var(--face-display);
+  font-weight:300;
+  font-size:.875rem;
+  font-variant-numeric:tabular-nums;
+  min-height:3rem;
+  cursor:pointer;
+  transition:background .16s ease-out, color .16s ease-out, box-shadow .16s ease-out, filter .16s ease-out;
+}
+/* hover darkens unselected cells... */
+.cal__day:not(.cal__day--picked):hover{ background:var(--panel); }
+/* ...but a selected cell is already filled, so it dims instead */
+.cal__day--picked:hover{ filter:brightness(.9); }
+.cal__day:focus-visible{ outline:2px solid var(--signal); outline-offset:-2px; }
+.cal__day--end{ color:var(--dim); }
+.cal__day--out{ color:var(--hairline); }
+.cal__day--today{
+  color:var(--signal);
+  box-shadow:inset 0 0 0 1px var(--signal);
+}
+.cal__day--picked{
+  background:var(--bone);
+  color:var(--panel);
+  box-shadow:none;
+}
+/* selecting today keeps it amber rather than swapping its identity out */
+.cal__day--today.cal__day--picked{
+  background:var(--signal);
+  color:var(--panel);
+  box-shadow:none;
+}
+
+.cal__foot{
+  border-top:1px solid var(--hairline);
+  padding:.85rem var(--gap);
+  font-size:.625rem;
+  font-weight:500;
+  letter-spacing:.14em;
+  text-transform:uppercase;
+  color:var(--dim);
+  text-align:center;
+}
+.cal__foot strong{ color:var(--bone); font-weight:500; }
+
+/* ============================================================
+   ALARMS
+   ============================================================ */
+.alarms{
+  width:100%;
+  max-width:34rem;
+  background:var(--panel-raised);
+  border:1px solid var(--hairline);
+  border-radius:4px;
+  overflow:hidden;
+}
+
+.alarms__head{
+  display:flex;
+  align-items:center;
+  gap:.5rem;
+  padding:.75rem .75rem .75rem var(--gap);
+  border-bottom:1px solid var(--hairline);
+}
+.alarms__title{
+  flex:1;
+  font-size:.6875rem;
+  font-weight:600;
+  letter-spacing:.16em;
+  text-transform:uppercase;
+}
+.alarms__count{ color:var(--dim); }
+
+/* ---- ringing banner ---- */
+.ring{
+  display:flex;
+  align-items:center;
+  gap:.75rem;
+  flex-wrap:wrap;
+  padding:.9rem var(--gap);
+  border-bottom:1px solid var(--signal);
+  background:var(--panel);
+}
+.ring[hidden]{ display:none; }
+.ring__time{
+  font-family:var(--face-display);
+  font-weight:300;
+  font-size:1.5rem;
+  letter-spacing:-.03em;
+  color:var(--signal);
+  font-variant-numeric:tabular-nums;
+  animation:pulse 1s steps(1) infinite;
+}
+.ring__label{
+  flex:1;
+  min-width:6rem;
+  font-size:.6875rem;
+  font-weight:600;
+  letter-spacing:.14em;
+  text-transform:uppercase;
+  color:var(--bone);
+}
+
+/* ---- list ---- */
+.alarms__list{ }
+.alarm{
+  display:grid;
+  grid-template-columns:auto 1fr auto auto;
+  align-items:center;
+  gap:.85rem;
+  padding:.9rem var(--gap);
+  border-bottom:1px solid var(--hairline);
+}
+.alarm__time{
+  font-family:var(--face-display);
+  font-weight:300;
+  font-size:1.75rem;
+  letter-spacing:-.03em;
+  font-variant-numeric:tabular-nums;
+  line-height:1;
+}
+.alarm__body{ min-width:0; }
+.alarm__label{
+  font-size:.6875rem;
+  font-weight:600;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.alarm__days{
+  font-size:.5625rem;
+  font-weight:600;
+  letter-spacing:.14em;
+  text-transform:uppercase;
+  color:var(--dim);
+  margin-top:.2rem;
+}
+.alarm--off .alarm__time,
+.alarm--off .alarm__label{ color:var(--dim); }
+
+.alarms__empty{
+  padding:1.75rem var(--gap);
+  text-align:center;
+  font-size:.625rem;
+  font-weight:500;
+  letter-spacing:.16em;
+  text-transform:uppercase;
+  color:var(--hairline);
+}
+
+/* ---- switch ---- */
+.sw{
+  appearance:none;
+  width:2.4rem;
+  height:1.2rem;
+  border-radius:99px;
+  border:1px solid var(--hairline);
+  background:none;
+  position:relative;
+  cursor:pointer;
+  padding:0;
+  transition:border-color .16s ease-out;
+}
+.sw::after{
+  content:"";
+  position:absolute;
+  top:.15rem; left:.15rem;
+  width:.8rem; height:.8rem;
+  border-radius:50%;
+  background:var(--dim);
+  transition:transform .16s ease-out, background .16s ease-out;
+}
+.sw[aria-checked="true"]{ border-color:var(--signal); }
+.sw[aria-checked="true"]::after{
+  background:var(--signal);
+  transform:translateX(1.2rem);
+}
+.sw:focus-visible{ outline:2px solid var(--signal); outline-offset:2px; }
+
+.alarm__del{
+  appearance:none;
+  background:none;
+  border:0;
+  color:var(--hairline);
+  font-size:1rem;
+  line-height:1;
+  padding:.25rem .35rem;
+  cursor:pointer;
+  transition:color .16s ease-out;
+}
+.alarm__del:hover{ color:var(--alarm); }
+.alarm__del:focus-visible{ outline:2px solid var(--signal); outline-offset:2px; }
+
+/* ---- new-alarm form ---- */
+.aform{
+  padding:var(--gap);
+  border-bottom:1px solid var(--hairline);
+  text-align:center;
+}
+.aform[hidden]{ display:none; }
+.aform__time{
+  display:flex;
+  align-items:baseline;
+  justify-content:center;
+  font-family:var(--face-display);
+  font-weight:300;
+  font-size:2.5rem;
+  letter-spacing:-.03em;
+}
+.aform__label{
+  display:block;
+  width:100%;
+  max-width:16rem;
+  margin:1rem auto 0;
+  background:none;
+  border:0;
+  border-bottom:1px solid var(--hairline);
+  color:var(--bone);
+  font-family:var(--face-util);
+  font-size:.75rem;
+  letter-spacing:.1em;
+  text-align:center;
+  padding:.4rem 0;
+}
+.aform__label::placeholder{ color:var(--hairline); letter-spacing:.14em; text-transform:uppercase; }
+.aform__label:focus{ outline:none; border-bottom-color:var(--signal); }
+
+.alarm__mer{
+  font-size:.5em;
+  color:var(--dim);
+  margin-left:.3em;
+  letter-spacing:.06em;
+}
+
+.aform__date{
+  display:block;
+  margin:1rem auto 0;
+  background:none;
+  border:0;
+  border-bottom:1px solid var(--hairline);
+  color:var(--bone);
+  font-family:var(--face-display);
+  font-weight:300;
+  font-size:.9375rem;
+  text-align:center;
+  padding:.45rem .3rem;
+  color-scheme:dark;          /* makes the native picker dark too */
+}
+.aform__date:focus{ outline:none; border-bottom-color:var(--signal); }
+.aform__date::-webkit-calendar-picker-indicator{
+  filter:invert(1);
+  opacity:.45;
+  cursor:pointer;
+}
+.aform__date::-webkit-calendar-picker-indicator:hover{ opacity:1; }
+
+.aform__msg{
+  min-height:1em;
+  margin-top:.9rem;
+  font-size:.625rem;
+  font-weight:600;
+  letter-spacing:.14em;
+  text-transform:uppercase;
+  color:var(--alarm);
+}
+
+.chip--on{
+  color:var(--panel);
+  background:var(--bone);
+  border-color:var(--bone);
+}
+.chip--on:hover{ color:var(--panel); }
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{
+    animation-duration:.01ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:.01ms !important;
+  }
+}
+</style>
+</head>
+
+<body>
+
+<div class="rig">
+
+  <nav class="rail" role="tablist" aria-label="Modes">
+    <button class="rail__tab" role="tab" aria-selected="true"  aria-controls="p-clock"     data-mode="clock">Clock</button>
+    <button class="rail__tab" role="tab" aria-selected="false" aria-controls="p-timer"     data-mode="timer">Timer</button>
+    <button class="rail__tab" role="tab" aria-selected="false" aria-controls="p-stopwatch" data-mode="stopwatch">Stopwatch</button>
+  </nav>
+
+  <!-- ============ CLOCK ============ -->
+  <section class="panel" id="p-clock" role="tabpanel" aria-label="Clock">
+    <div class="readout" id="clockRead">--:--<span class="readout__sub">:--</span></div>
+    <div class="sweep"><div class="sweep__fill" id="clockSweep"></div></div>
+    <div class="meta" id="clockDate">&nbsp;</div>
+    <div class="controls">
+      <button class="btn" id="clockFormat">24-hour</button>
+    </div>
+  </section>
+
+  <!-- ============ TIMER ============ -->
+  <section class="panel" id="p-timer" role="tabpanel" aria-label="Timer" hidden>
+
+    <div class="entry" id="timerEntry">
+      <input class="entry__field" id="tHr"  inputmode="numeric" maxlength="2" value="00" aria-label="Hours">
+      <span class="entry__colon">:</span>
+      <input class="entry__field" id="tMin" inputmode="numeric" maxlength="2" value="05" aria-label="Minutes">
+      <span class="entry__colon">:</span>
+      <input class="entry__field" id="tSec" inputmode="numeric" maxlength="2" value="00" aria-label="Seconds">
+    </div>
+
+    <div class="readout" id="timerRead" hidden>00:05:00</div>
+
+    <div class="sweep"><div class="sweep__fill" id="timerSweep"></div></div>
+    <div class="meta" id="timerMeta">Set a duration</div>
+
+    <div class="presets" id="timerPresets">
+      <button class="chip" data-secs="60">1 min</button>
+      <button class="chip" data-secs="300">5 min</button>
+      <button class="chip" data-secs="600">10 min</button>
+      <button class="chip" data-secs="1500">25 min</button>
+    </div>
+
+    <div class="controls">
+      <button class="btn btn--go" id="timerGo">Start</button>
+      <button class="btn" id="timerReset" disabled>Reset</button>
+    </div>
+  </section>
+
+  <!-- ============ STOPWATCH ============ -->
+  <section class="panel" id="p-stopwatch" role="tabpanel" aria-label="Stopwatch" hidden>
+    <div class="readout" id="swRead">00:00<span class="readout__frac">.00</span></div>
+    <div class="sweep"><div class="sweep__fill" id="swSweep"></div></div>
+    <div class="meta" id="swMeta">Ready</div>
+
+    <div class="controls">
+      <button class="btn btn--go" id="swGo">Start</button>
+      <button class="btn" id="swLap" disabled>Lap</button>
+      <button class="btn" id="swReset" disabled>Reset</button>
+    </div>
+
+    <ol class="laps" id="swLaps"></ol>
+    <p class="hint">Space start &middot; L lap &middot; R reset</p>
+  </section>
+
+</div>
+
+<!-- ============ CALENDAR ============ -->
+<section class="cal" aria-label="Calendar">
+
+  <header class="cal__head">
+    <h2 class="cal__title">
+      <span id="calMonth">&nbsp;</span>
+      <span class="cal__year" id="calYear"></span>
+    </h2>
+    <button class="cal__btn" id="calToday">Today</button>
+    <button class="cal__btn" id="calPrev" aria-label="Previous month">&#8592;</button>
+    <button class="cal__btn" id="calNext" aria-label="Next month">&#8594;</button>
+  </header>
+
+  <div class="sweep cal__progress" id="calSweepTrack">
+    <div class="sweep__fill" id="calSweep"></div>
+  </div>
+
+  <div class="cal__grid" id="calGrid"></div>
+
+  <footer class="cal__foot" id="calFoot">&nbsp;</footer>
+
+</section>
+
+<!-- ============ ALARMS ============ -->
+<section class="alarms" aria-label="Alarms">
+
+  <header class="alarms__head">
+    <h2 class="alarms__title">
+      Alarms <span class="alarms__count" id="alarmCount"></span>
+    </h2>
+    <button class="cal__btn" id="alarmNew">+ New</button>
+  </header>
+
+  <div class="ring" id="ring" hidden>
+    <span class="ring__time" id="ringTime">00:00</span>
+    <span class="ring__label" id="ringLabel"></span>
+    <button class="cal__btn" id="ringSnooze">Snooze 9</button>
+    <button class="cal__btn" id="ringStop">Stop</button>
+  </div>
+
+  <div class="aform" id="aform" hidden>
+    <div class="aform__time">
+      <input class="entry__field" id="aH" inputmode="numeric" maxlength="2" value="07" aria-label="Alarm hour">
+      <span class="entry__colon">:</span>
+      <input class="entry__field" id="aM" inputmode="numeric" maxlength="2" value="30" aria-label="Alarm minute">
+    </div>
+
+    <div class="presets" id="aMeridiem" role="group" aria-label="AM or PM">
+      <button class="chip chip--on" type="button" data-mer="AM">AM</button>
+      <button class="chip" type="button" data-mer="PM">PM</button>
+    </div>
+
+    <input class="aform__date" id="aDate" type="date" aria-label="Alarm date">
+
+    <input class="aform__label" id="aLabel" type="text" maxlength="28" placeholder="Alarm">
+
+    <p class="aform__msg" id="aMsg"></p>
+
+    <div class="controls">
+      <button class="btn btn--go" id="aSave">Save</button>
+      <button class="btn" id="aCancel">Cancel</button>
+    </div>
+  </div>
+
+  <div class="alarms__list" id="alarmList"></div>
+
+</section>
+
+<script>
+"use strict";
+
+/* ---------- helpers ---------- */
+const $ = id => document.getElementById(id);
+const pad = (n, w = 2) => String(Math.floor(n)).padStart(w, "0");
+
+/* ============================================================
+   MODE SWITCHING
+   ============================================================ */
+let mode = "clock";
+const tabs   = [...document.querySelectorAll(".rail__tab")];
+const panels = { clock: $("p-clock"), timer: $("p-timer"), stopwatch: $("p-stopwatch") };
+
+tabs.forEach(tab => tab.addEventListener("click", () => {
+  mode = tab.dataset.mode;
+  tabs.forEach(t => t.setAttribute("aria-selected", String(t === tab)));
+  for (const key in panels) panels[key].hidden = (key !== mode);
+}));
+
+/* ============================================================
+   CLOCK
+   ============================================================ */
+let use24 = true;
+const clockRead  = $("clockRead");
+const clockSweep = $("clockSweep");
+const clockDate  = $("clockDate");
+const DAYS   = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+$("clockFormat").addEventListener("click", e => {
+  use24 = !use24;
+  e.currentTarget.textContent = use24 ? "24-hour" : "12-hour";
+});
+
+function drawClock(){
+  const d = new Date();
+  let h = d.getHours();
+  let suffix = "";
+  if (!use24){
+    suffix = h < 12 ? " AM" : " PM";
+    h = h % 12 || 12;
+  }
+  clockRead.innerHTML =
+    `${use24 ? pad(h) : h}:${pad(d.getMinutes())}` +
+    `<span class="readout__sub">:${pad(d.getSeconds())}</span>` +
+    (suffix ? `<span class="readout__frac">${suffix}</span>` : "");
+
+  /* sweep fills once across the minute */
+  clockSweep.style.width =
+    ((d.getSeconds() + d.getMilliseconds() / 1000) / 60 * 100) + "%";
+
+  clockDate.textContent =
+    `${DAYS[d.getDay()]} ${pad(d.getDate())} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+}
+
+/* ============================================================
+   TIMER
+   ============================================================ */
+const tHr = $("tHr"), tMin = $("tMin"), tSec = $("tSec");
+const timerEntry = $("timerEntry"),
+      timerRead  = $("timerRead"),
+      timerSweep = $("timerSweep"),
+      timerMeta  = $("timerMeta"),
+      timerGo    = $("timerGo"),
+      timerReset = $("timerReset");
+const timerPanel      = panels.timer;
+const timerSweepTrack = timerSweep.parentElement;
+
+let tState    = "idle";   /* idle | running | paused | firing */
+let tTotal    = 0;        /* ms */
+let tRemain   = 0;        /* ms */
+let tDeadline = 0;        /* performance.now() target */
+
+[tHr, tMin, tSec].forEach(f => {
+  f.addEventListener("focus", () => f.select());
+  f.addEventListener("input", () => {
+    f.value = f.value.replace(/\D/g, "").slice(0, 2);
+  });
+  f.addEventListener("blur", () => {
+    let v = parseInt(f.value || "0", 10);
+    if (f !== tHr) v = Math.min(v, 59);
+    f.value = pad(v);
+  });
+});
+
+$("timerPresets").addEventListener("click", e => {
+  const chip = e.target.closest(".chip");
+  if (!chip || tState === "running") return;
+  const s = +chip.dataset.secs;
+  tHr.value  = pad(Math.floor(s / 3600));
+  tMin.value = pad(Math.floor(s / 60) % 60);
+  tSec.value = pad(s % 60);
+  if (tState === "firing") timerReset.click();
+  clearFiring();
+});
+
+function readEntry(){
+  return ((parseInt(tHr.value  || 0, 10) * 3600) +
+          (parseInt(tMin.value || 0, 10) * 60)   +
+          (parseInt(tSec.value || 0, 10))) * 1000;
+}
+
+function showEntry(on){
+  timerEntry.hidden = !on;
+  timerRead.hidden  = on;
+}
+
+function fmtTimer(ms){
+  const t = Math.max(0, Math.ceil(ms / 1000));
+  return `${pad(t / 3600)}:${pad((t / 60) % 60)}:${pad(t % 60)}`;
+}
+
+function clearFiring(){
+  timerPanel.classList.remove("panel--firing");
+  timerSweepTrack.classList.remove("sweep--alarm");
+}
+
+timerGo.addEventListener("click", () => {
+  if (tState === "idle" || tState === "firing"){
+    clearFiring();
+    showEntry(true);
+    const ms = readEntry();
+    if (ms <= 0){ timerMeta.textContent = "Set a duration first"; return; }
+    tTotal = tRemain = ms;
+    tDeadline = performance.now() + ms;
+    tState = "running";
+    showEntry(false);
+    timerRead.textContent = fmtTimer(ms);
+    timerGo.textContent = "Pause";
+    timerReset.disabled = false;
+    timerMeta.textContent = "Counting down";
+    unlockAudio();
+  } else if (tState === "running"){
+    tRemain = tDeadline - performance.now();
+    tState = "paused";
+    timerGo.textContent = "Resume";
+    timerMeta.textContent = "Paused";
+  } else if (tState === "paused"){
+    tDeadline = performance.now() + tRemain;
+    tState = "running";
+    timerGo.textContent = "Pause";
+    timerMeta.textContent = "Counting down";
+  }
+});
+
+timerReset.addEventListener("click", () => {
+  tState = "idle";
+  clearFiring();
+  showEntry(true);
+  timerSweep.style.width = "0%";
+  timerGo.textContent = "Start";
+  timerReset.disabled = true;
+  timerMeta.textContent = "Set a duration";
+});
+
+function drawTimer(){
+  if (tState === "running"){
+    const left = tDeadline - performance.now();
+    if (left <= 0){
+      tState = "firing";
+      timerRead.textContent = "00:00:00";
+      timerSweep.style.width = "0%";
+      timerPanel.classList.add("panel--firing");
+      timerSweepTrack.classList.add("sweep--alarm");
+      timerMeta.innerHTML = '<span class="meta__hot">Time&rsquo;s up</span>';
+      timerGo.textContent = "Start";
+      beep();
+      return;
+    }
+    timerRead.textContent = fmtTimer(left);
+    timerSweep.style.width = (left / tTotal * 100) + "%";
+  } else if (tState === "paused"){
+    timerRead.textContent = fmtTimer(tRemain);
+    timerSweep.style.width = (tRemain / tTotal * 100) + "%";
+  }
+}
+
+/* ---- audio: three short pulses, no external file ---- */
+let actx = null;
+function unlockAudio(){
+  if (!actx){
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (AC) actx = new AC();
+  }
+  if (actx && actx.state === "suspended") actx.resume();
+}
+function beep(){
+  if (!actx) return;
+  const t0 = actx.currentTime;
+  for (let i = 0; i < 3; i++){
+    const osc  = actx.createOscillator();
+    const gain = actx.createGain();
+    const at   = t0 + i * 0.28;
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(880, at);
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(0.22, at + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.18);
+    osc.connect(gain).connect(actx.destination);
+    osc.start(at);
+    osc.stop(at + 0.2);
+  }
+}
+
+/* ============================================================
+   STOPWATCH
+   ============================================================ */
+const swRead   = $("swRead"),
+      swSweep  = $("swSweep"),
+      swMeta   = $("swMeta"),
+      swGo     = $("swGo"),
+      swLapB   = $("swLap"),
+      swResetB = $("swReset"),
+      swLaps   = $("swLaps");
+
+let swRunning = false;
+let swStart   = 0;   /* performance.now() origin */
+let swElapsed = 0;   /* ms accumulated while paused */
+let laps      = [];  /* { split, total } */
+let lastLapAt = 0;
+
+function swNow(){
+  return swRunning ? swElapsed + (performance.now() - swStart) : swElapsed;
+}
+
+function fmtSW(ms){
+  const cs = Math.floor(ms / 10) % 100;
+  const s  = Math.floor(ms / 1000) % 60;
+  const m  = Math.floor(ms / 60000) % 60;
+  const h  = Math.floor(ms / 3600000);
+  const head = h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+  return { head, cs: pad(cs) };
+}
+
+swGo.addEventListener("click", () => {
+  if (!swRunning){
+    swStart = performance.now();
+    swRunning = true;
+    swGo.textContent = "Pause";
+    swGo.classList.remove("btn--go");
+    swLapB.disabled = false;
+    swResetB.disabled = false;
+    swMeta.textContent = laps.length ? `${laps.length} lap${laps.length === 1 ? "" : "s"}` : "Running";
+  } else {
+    swElapsed += performance.now() - swStart;
+    swRunning = false;
+    swGo.textContent = "Resume";
+    swGo.classList.add("btn--go");
+    swLapB.disabled = true;
+    swMeta.textContent = "Paused";
+  }
+});
+
+swResetB.addEventListener("click", () => {
+  swRunning = false;
+  swElapsed = 0;
+  lastLapAt = 0;
+  laps = [];
+  swLaps.innerHTML = "";
+  swSweep.style.width = "0%";
+  swGo.textContent = "Start";
+  swGo.classList.add("btn--go");
+  swLapB.disabled = true;
+  swResetB.disabled = true;
+  swMeta.textContent = "Ready";
+});
+
+swLapB.addEventListener("click", () => {
+  if (!swRunning) return;
+  const total = swNow();
+  laps.push({ split: total - lastLapAt, total });
+  lastLapAt = total;
+  renderLaps();
+});
+
+function renderLaps(){
+  const splits = laps.map(l => l.split);
+  const best   = laps.length > 1 ? Math.min(...splits) : null;
+  const worst  = laps.length > 1 ? Math.max(...splits) : null;
+
+  swLaps.innerHTML = laps.map((l, i) => {
+    const s = fmtSW(l.split), t = fmtSW(l.total);
+    let cls = "laps__row";
+    if (best  !== null && l.split === best)  cls += " laps__row--best";
+    if (worst !== null && l.split === worst && best !== worst) cls += " laps__row--worst";
+    return `<li class="${cls}">
+      <span class="laps__idx">${pad(i + 1)}</span>
+      <span class="laps__split">${s.head}.${s.cs}</span>
+      <span class="laps__total">${t.head}.${t.cs}</span>
+    </li>`;
+  }).reverse().join("");
+
+  swMeta.textContent = `${laps.length} lap${laps.length === 1 ? "" : "s"}`;
+}
+
+function drawStopwatch(){
+  const ms = swNow();
+  const f  = fmtSW(ms);
+  swRead.innerHTML = `${f.head}<span class="readout__frac">.${f.cs}</span>`;
+  /* sweep fills once per second */
+  swSweep.style.width = ((ms % 1000) / 1000 * 100) + "%";
+}
+
+/* ============================================================
+   CALENDAR
+   ============================================================ */
+const calGrid       = $("calGrid"),
+      calMonthEl    = $("calMonth"),
+      calYearEl     = $("calYear"),
+      calFoot       = $("calFoot"),
+      calSweep      = $("calSweep"),
+      calSweepTrack = $("calSweepTrack");
+
+const MONTHS_FULL = ["January","February","March","April","May","June",
+                     "July","August","September","October","November","December"];
+
+let viewY, viewM;
+let picked    = null;   /* Date the user clicked, or null */
+let dayKey    = "";     /* guards against midnight rollover */
+
+const sameDay = (a, b) =>
+  a.getFullYear() === b.getFullYear() &&
+  a.getMonth()    === b.getMonth()    &&
+  a.getDate()     === b.getDate();
+
+const isLeap  = y => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+const yearLen = y => isLeap(y) ? 366 : 365;
+
+function dayOfYear(d){
+  const jan1 = new Date(d.getFullYear(), 0, 1);
+  const here = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  return Math.round((here - jan1) / 86400000) + 1;
+}
+
+function renderCal(){
+  const today = new Date();
+  dayKey = today.toDateString();
+
+  calMonthEl.textContent = MONTHS_FULL[viewM];
+  calYearEl.textContent  = viewY;
+
+  /* weekday header — weekends held back a shade */
+  let html = DAYS.map((d, i) =>
+    `<div class="cal__dow${(i === 0 || i === 6) ? " cal__dow--end" : ""}">${d.slice(0, 2)}</div>`
+  ).join("");
+
+  const firstDow = new Date(viewY, viewM, 1).getDay();
+  const inMonth  = new Date(viewY, viewM + 1, 0).getDate();
+  const prevLen  = new Date(viewY, viewM, 0).getDate();
+  const cells    = Math.ceil((firstDow + inMonth) / 7) * 7;
+
+  for (let i = 0; i < cells; i++){
+    const n     = i - firstDow + 1;          /* may be <1 or >inMonth */
+    const out   = n < 1 || n > inMonth;
+    const label = out ? (n < 1 ? prevLen + n : n - inMonth) : n;
+    const date  = new Date(viewY, viewM, n); /* JS rolls these over correctly */
+    const dow   = i % 7;
+    const isPicked = !out && !!picked && sameDay(date, picked);
+
+    let cls = "cal__day";
+    if (out) cls += " cal__day--out";
+    else if (dow === 0 || dow === 6) cls += " cal__day--end";
+    if (!out && sameDay(date, today)) cls += " cal__day--today";
+    if (isPicked) cls += " cal__day--picked";
+
+    html += `<button class="${cls}" data-n="${n}" aria-pressed="${isPicked}">${pad(label)}</button>`;
+  }
+
+  calGrid.innerHTML = html;
+  writeFoot();
+  updateCalSweep();
+}
+
+/* whole days between two dates. Date.UTC strips the local clock out of the
+   arithmetic, so a daylight-saving boundary can't produce a 23- or 25-hour day */
+function dayDelta(from, to){
+  const a = Date.UTC(from.getFullYear(), from.getMonth(), from.getDate());
+  const b = Date.UTC(to.getFullYear(),   to.getMonth(),   to.getDate());
+  return Math.round((b - a) / 86400000);
+}
+
+const longDate = d =>
+  `${DAYS[d.getDay()]} ${pad(d.getDate())} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+
+function writeFoot(){
+  const today = new Date();
+
+  /* nothing picked — the footer is about today */
+  if (!picked){
+    const doy   = dayOfYear(today);
+    const total = yearLen(today.getFullYear());
+    calFoot.innerHTML =
+      `<strong>${longDate(today)}</strong>` +
+      ` &middot; Day ${doy} of ${total}` +
+      ` &middot; ${total - doy} left`;
+    return;
+  }
+
+  /* something picked — the footer is about the distance to it */
+  const n = dayDelta(today, picked);
+  let phrase;
+  if      (n ===  0) phrase = "Today";
+  else if (n ===  1) phrase = "Tomorrow";
+  else if (n === -1) phrase = "Yesterday";
+  else if (n  >   0) phrase = `In ${n} days`;
+  else               phrase = `${-n} days ago`;
+
+  calFoot.innerHTML = `<strong>${phrase}</strong> &middot; ${longDate(picked)}`;
+}
+
+/* the sweep again, at month scale */
+function updateCalSweep(){
+  const now   = new Date();
+  const isCur = now.getFullYear() === viewY && now.getMonth() === viewM;
+  calSweepTrack.hidden = !isCur;
+  if (!isCur) return;
+  const days    = new Date(viewY, viewM + 1, 0).getDate();
+  const intoDay = (now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds()) / 86400;
+  calSweep.style.width = (((now.getDate() - 1) + intoDay) / days * 100) + "%";
+}
+
+function shiftMonth(delta){
+  viewM += delta;
+  if (viewM < 0){ viewM = 11; viewY--; }
+  else if (viewM > 11){ viewM = 0; viewY++; }
+  renderCal();
+}
+
+$("calPrev").addEventListener("click", () => shiftMonth(-1));
+$("calNext").addEventListener("click", () => shiftMonth(1));
+$("calToday").addEventListener("click", () => {
+  const t = new Date();
+  viewY = t.getFullYear();
+  viewM = t.getMonth();
+  picked = null;
+  renderCal();
+});
+
+/* repaint the selection in place — rebuilding the grid would replace the
+   clicked node, killing both its CSS transition and its keyboard focus */
+function paintPicked(){
+  calGrid.querySelectorAll(".cal__day--picked").forEach(el => {
+    el.classList.remove("cal__day--picked");
+    el.setAttribute("aria-pressed", "false");
+  });
+  if (picked){
+    const cell = calGrid.querySelector(
+      `.cal__day[data-n="${picked.getDate()}"]:not(.cal__day--out)`
+    );
+    if (cell){
+      cell.classList.add("cal__day--picked");
+      cell.setAttribute("aria-pressed", "true");
+    }
+  }
+  writeFoot();
+}
+
+calGrid.addEventListener("click", e => {
+  const cell = e.target.closest(".cal__day");
+  if (!cell) return;
+  const d = new Date(viewY, viewM, +cell.dataset.n);
+
+  /* a spill-over day walks to its own month — that needs a full redraw */
+  if (cell.classList.contains("cal__day--out")){
+    viewY  = d.getFullYear();
+    viewM  = d.getMonth();
+    picked = d;
+    renderCal();
+    return;
+  }
+
+  picked = (picked && sameDay(d, picked)) ? null : d;
+  paintPicked();
+});
+
+(function initCal(){
+  const t = new Date();
+  viewY = t.getFullYear();
+  viewM = t.getMonth();
+  renderCal();
+})();
+
+/* ============================================================
+   ALARMS
+   ============================================================ */
+const alarmList  = $("alarmList"),
+      alarmCount = $("alarmCount"),
+      aform      = $("aform"),
+      aH = $("aH"), aM = $("aM"), aDate = $("aDate"), aLabel = $("aLabel"),
+      aMer = $("aMeridiem"), aMsg = $("aMsg"),
+      ringEl = $("ring"), ringTime = $("ringTime"), ringLabel = $("ringLabel");
+
+let alarms     = [];    /* { id, when:Date, label, on, fired } */
+let nextId     = 1;
+let ringing    = null;
+let ringLoop   = null;
+let meridiem   = "AM";
+let lastMinKey = "";
+
+/* never drop a user-typed string straight into innerHTML */
+const esc = s => String(s).replace(/[&<>"]/g,
+  c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+
+/* the date input speaks YYYY-MM-DD, and only in local time if we build it ourselves */
+const isoOf   = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const fromISO = s => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
+
+/* 12-hour clock -> 24-hour. Noon and midnight are the awkward pair:
+   12 AM is hour 0, 12 PM is hour 12, which %12 handles for both. */
+const to24 = (h12, mer) => (h12 % 12) + (mer === "PM" ? 12 : 0);
+
+aMer.addEventListener("click", e => {
+  const c = e.target.closest(".chip");
+  if (!c) return;
+  meridiem = c.dataset.mer;
+  aMer.querySelectorAll(".chip").forEach(x => x.classList.toggle("chip--on", x === c));
+});
+
+[aH, aM].forEach(f => {
+  f.addEventListener("focus", () => f.select());
+  f.addEventListener("input", () => { f.value = f.value.replace(/\D/g, "").slice(0, 2); });
+  f.addEventListener("blur",  () => {
+    let v = parseInt(f.value || "0", 10);
+    v = (f === aH) ? Math.min(Math.max(v, 1), 12) : Math.min(v, 59);
+    f.value = pad(v);
+  });
+});
+
+aLabel.addEventListener("focus", () => aLabel.select());
+
+$("alarmNew").addEventListener("click", () => {
+  aform.hidden = !aform.hidden;
+  if (aform.hidden) return;
+  aMsg.textContent = "";
+  aLabel.value = "Alarm";                      /* the default, visible and editable */
+  aDate.value = isoOf(picked || new Date());   /* borrows the calendar's selected day */
+  unlockAudio();
+  aH.focus();
+});
+$("aCancel").addEventListener("click", () => { aform.hidden = true; });
+
+$("aSave").addEventListener("click", () => {
+  if (!aDate.value){ aMsg.textContent = "Pick a date"; return; }
+
+  const base = fromISO(aDate.value);
+  const when = new Date(
+    base.getFullYear(), base.getMonth(), base.getDate(),
+    to24(Math.min(Math.max(parseInt(aH.value || "12", 10), 1), 12), meridiem),
+    Math.min(parseInt(aM.value || "0", 10), 59), 0, 0
+  );
+
+  if (when <= new Date()){ aMsg.textContent = "That moment has already passed"; return; }
+
+  alarms.push({
+    id: nextId++, when,
+    label: aLabel.value.trim() || "Alarm",   /* cleared field still gets the default */
+    on: true, fired: false
+  });
+  aMsg.textContent = "";
+  aform.hidden = true;
+  unlockAudio();          /* browsers only allow sound after a real gesture */
+  renderAlarms();
+});
+
+/* ---- describing an alarm ---- */
+const clock12    = d => `${pad(d.getHours() % 12 || 12)}:${pad(d.getMinutes())}`;
+const meridiemOf = d => d.getHours() < 12 ? "AM" : "PM";
+
+function dateText(d){
+  const n = dayDelta(new Date(), d);
+  if (n ===  0) return "Today";
+  if (n ===  1) return "Tomorrow";
+  if (n === -1) return "Yesterday";
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return `${DAYS[d.getDay()]} ${pad(d.getDate())} ${MONTHS[d.getMonth()]}` +
+         (sameYear ? "" : ` ${d.getFullYear()}`);
+}
+
+function untilText(d){
+  const mins = Math.floor((d - new Date()) / 60000);
+  if (mins < 0) return "passed";
+  const h = Math.floor(mins / 60), m = mins % 60;
+  if (h >= 24) return `in ${Math.floor(h / 24)}d ${h % 24}h`;
+  if (h) return `in ${h}h ${m}m`;
+  return `in ${m}m`;
+}
+
+function renderAlarms(){
+  const live = alarms.filter(a => a.on && !a.fired).length;
+  alarmCount.textContent = alarms.length ? `\u00b7 ${live} armed` : "";
+
+  if (!alarms.length){
+    alarmList.innerHTML = `<p class="alarms__empty">No alarms set</p>`;
+    return;
+  }
+
+  alarmList.innerHTML = [...alarms]
+    .sort((x, y) => x.when - y.when)
+    .map(a => {
+      const sub = a.fired ? `${dateText(a.when)} \u00b7 rang`
+                : !a.on   ? `${dateText(a.when)} \u00b7 off`
+                :           `${dateText(a.when)} \u00b7 ${untilText(a.when)}`;
+      return `<div class="alarm${a.on && !a.fired ? "" : " alarm--off"}" data-id="${a.id}">
+        <span class="alarm__time">${clock12(a.when)}<span class="alarm__mer">${meridiemOf(a.when)}</span></span>
+        <div class="alarm__body">
+          <div class="alarm__label">${esc(a.label)}</div>
+          <div class="alarm__days">${sub}</div>
+        </div>
+        <button class="sw" role="switch" aria-checked="${a.on && !a.fired}" aria-label="Toggle alarm"></button>
+        <button class="alarm__del" aria-label="Delete alarm">&times;</button>
+      </div>`;
+    }).join("");
+}
+
+alarmList.addEventListener("click", e => {
+  const row = e.target.closest(".alarm");
+  if (!row) return;
+  const id = +row.dataset.id;
+  const a  = alarms.find(x => x.id === id);
+  if (!a) return;
+
+  if (e.target.closest(".alarm__del")){
+    alarms = alarms.filter(x => x.id !== id);
+    renderAlarms();
+  } else if (e.target.closest(".sw")){
+    a.on = !a.on;
+    renderAlarms();
+  }
+});
+
+/* ---- ringing ---- */
+function startRing(a){
+  ringing = a;
+  ringTime.textContent  = `${clock12(a.when)} ${meridiemOf(a.when)}`;
+  ringLabel.textContent = a.label;
+  ringEl.hidden = false;
+  a.on = false;                        /* a dated alarm only happens once */
+  unlockAudio();
+  beep();
+  ringLoop = setInterval(beep, 2000);
+  renderAlarms();
+  ringEl.scrollIntoView({ block:"nearest", behavior:"smooth" });
+}
+
+function stopRing(){
+  clearInterval(ringLoop);
+  ringLoop = null;
+  ringing  = null;
+  ringEl.hidden = true;
+  renderAlarms();
+}
+
+$("ringStop").addEventListener("click", stopRing);
+$("ringSnooze").addEventListener("click", () => {
+  if (!ringing) return;
+  alarms.push({
+    id: nextId++,
+    when: new Date(Date.now() + 9 * 60000),
+    label: `${ringing.label} \u00b7 snoozed`,
+    on: true, fired: false
+  });
+  stopRing();
+});
+
+/* checked once per minute, not once per frame */
+function checkAlarms(){
+  const now = new Date();
+  const key = `${now.getDate()}:${now.getHours()}:${now.getMinutes()}`;
+  if (key === lastMinKey) return;
+  lastMinKey = key;
+
+  renderAlarms();          /* refreshes the "in 2h 40m" countdowns */
+  if (ringing) return;
+
+  let dirty = false;
+  for (const a of alarms){
+    if (!a.on || a.fired || now < a.when) continue;
+    a.fired = true;
+    dirty = true;
+    /* if the tab was asleep and this is badly overdue, mark it and stay quiet */
+    if (now - a.when > 3600000){ a.on = false; continue; }
+    startRing(a);
+    return;
+  }
+  if (dirty) renderAlarms();
+}
+
+renderAlarms();
+
+/* ============================================================
+   KEYBOARD
+   ============================================================ */
+document.addEventListener("keydown", e => {
+  if (e.target.matches("input")) return;
+  const k = e.key.toLowerCase();
+
+  if (e.key === "ArrowLeft"){  shiftMonth(-1); return; }
+  if (e.key === "ArrowRight"){ shiftMonth(1);  return; }
+  if (e.key === "Escape" && picked){ picked = null; paintPicked(); return; }
+
+  if (mode === "stopwatch"){
+    if (e.code === "Space"){ e.preventDefault(); swGo.click(); }
+    else if (k === "l" && !swLapB.disabled)   swLapB.click();
+    else if (k === "r" && !swResetB.disabled) swResetB.click();
+  } else if (mode === "timer"){
+    if (e.code === "Space"){ e.preventDefault(); timerGo.click(); }
+    else if (k === "r" && !timerReset.disabled) timerReset.click();
+  }
+});
+
+/* ============================================================
+   ONE LOOP DRIVES EVERYTHING
+   ============================================================ */
+function frame(){
+  if (mode === "clock")          drawClock();
+  else if (mode === "stopwatch") drawStopwatch();
+  if (tState === "running" || tState === "paused") drawTimer();
+
+  /* redraw the calendar when the date turns over, otherwise just the sweep */
+  if (new Date().toDateString() !== dayKey) renderCal();
+  else updateCalSweep();
+
+  checkAlarms();
+
+  requestAnimationFrame(frame);
+}
+drawClock();
+frame();
+</script>
+
+</body>
+</html>
